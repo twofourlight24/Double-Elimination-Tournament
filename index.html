@@ -62,12 +62,16 @@
   import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-database.js";
 
   // ▼▼▼ 여기를 본인의 Firebase 프로젝트 설정으로 바꿔주세요 ▼▼▼
-  const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT.firebaseapp.com",
-    databaseURL: "https://YOUR_PROJECT-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "YOUR_PROJECT",
-  };
+const firebaseConfig = {
+  apiKey: "AIzaSyBzNRLo0HcmP1LQ8hxtyP3IBW0trkT27mo",
+  authDomain: "double-elimination-tourn-bee05.firebaseapp.com",
+  databaseURL: "https://double-elimination-tourn-bee05-default-rtdb.firebaseio.com",
+  projectId: "double-elimination-tourn-bee05",
+  storageBucket: "double-elimination-tourn-bee05.firebasestorage.app",
+  messagingSenderId: "1040065160682",
+  appId: "1:1040065160682:web:2ee8c99f6da9438a813e93",
+  measurementId: "G-DBFEJLVCSL"
+};
   // ▲▲▲ 여기까지 ▲▲▲
 
   const isConfigured = !firebaseConfig.databaseURL.includes("YOUR_PROJECT");
