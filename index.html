@@ -1,0 +1,1538 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bracket Stage - Double Elimination</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0A0A0C; }
+  #config-warning {
+    display: none;
+    max-width: 640px;
+    margin: 72px auto;
+    padding: 28px 32px;
+    background: #131316;
+    border: 1px solid #2c2c31;
+    color: #e8e8ea;
+    font-family: -apple-system, "Segoe UI", Rajdhani, sans-serif;
+    line-height: 1.7;
+  }
+  #config-warning h2 { color: #E4222D; margin-top: 0; }
+  #config-warning code {
+    background: #0e0e10;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #ff9d9d;
+  }
+  #config-warning ol { padding-left: 20px; }
+</style>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.28.5/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+</head>
+<body>
+
+<div id="config-warning">
+  <h2>Firebase 설정이 필요해요</h2>
+  <p>이 사이트는 참가자들 사이에 대진표를 실시간으로 동기화하기 위해 무료 Firebase Realtime Database를 사용합니다. 아래 순서대로 <code>index.html</code> 파일 상단의 <code>firebaseConfig</code> 값을 채워주세요.</p>
+  <ol>
+    <li><a href="https://console.firebase.google.com/" target="_blank" style="color:#7fb4ff;">Firebase 콘솔</a>에서 새 프로젝트를 만듭니다 (무료 Spark 요금제, 카드 등록 불필요).</li>
+    <li>왼쪽 메뉴 <b>Build → Realtime Database</b>로 이동해 데이터베이스를 만듭니다. (위치는 아무 곳이나 선택)</li>
+    <li>규칙(Rules) 탭에서 아래 내용으로 바꾸고 게시합니다:
+      <pre style="background:#0e0e10;padding:10px;overflow:auto;">{
+  "rules": {
+    "brackets": {
+      "$code": { ".read": true, ".write": true }
+    },
+    "$other": { ".read": false, ".write": false }
+  }
+}</pre>
+    </li>
+    <li>프로젝트 개요(톱니바퀴 아이콘) → 프로젝트 설정 → 내 앱에서 웹 앱(&lt;/&gt;)을 추가합니다.</li>
+    <li>표시되는 <code>firebaseConfig</code> 객체 전체를 복사해, 이 파일 상단 <code>firebaseConfig</code> 자리에 붙여넣습니다.</li>
+    <li>파일을 저장하고 새로고침하면 바로 사용할 수 있어요.</li>
+  </ol>
+</div>
+
+<div id="root"></div>
+
+<script>
+  // ▼▼▼ 여기를 본인의 Firebase 프로젝트 설정으로 바꿔주세요 ▼▼▼
+  var firebaseConfig = {
+    apiKey: "AIzaSyBzNRLo0HcmP1LQ8hxtyP3IBW0trkT27mo",
+    authDomain: "double-elimination-tourn-bee05.firebaseapp.com",
+    databaseURL: "https://double-elimination-tourn-bee05-default-rtdb.firebaseio.com",
+    projectId: "double-elimination-tourn-bee05",
+  };
+  // ▲▲▲ 여기까지 ▲▲▲
+
+  var isConfigured = firebaseConfig.databaseURL.indexOf("YOUR_PROJECT") === -1;
+
+  if (!isConfigured) {
+    document.getElementById("config-warning").style.display = "block";
+  } else {
+    firebase.initializeApp(firebaseConfig);
+    window.__bracketDB = { db: firebase.database() };
+    window.__bracketConfigured = true;
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+function dbRefFor(code) {
+  return window.__bracketDB.db.ref("brackets/" + code);
+}
+
+async function saveDoc(code, doc) {
+  await dbRefFor(code).set(doc);
+}
+
+async function loadDocOnce(code) {
+  const snap = await dbRefFor(code).once("value");
+  return snap.exists() ? snap.val() : null;
+}
+
+function subscribeDoc(code, cb) {
+  const r = dbRefFor(code);
+  const handler = (snap) => {
+    if (snap.exists()) cb(snap.val());
+  };
+  r.on("value", handler);
+  return () => r.off("value", handler);
+}
+
+function genCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 헷갈리는 문자 제외
+  let s = "";
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
+const CARD_W = 190;
+const BLOCK_H = 80;
+const CONN_W = 34;
+const COL_W = CARD_W + CONN_W;
+const SECTION_GAP = 70;
+const GUTTER = 50;
+const RED = "#E4222D";
+const LINE = "#48484f";
+
+function buildTemplate(n) {
+  const k = Math.log2(n);
+  let counter = 0;
+  const matches = {};
+  const dependents = {};
+
+  function addDep(sourceId, targetId) {
+    if (!dependents[sourceId]) dependents[sourceId] = [];
+    dependents[sourceId].push(targetId);
+  }
+
+  function newMatch(bracket, round, label) {
+    const id = `${bracket[0]}${round}_${counter++}`;
+    matches[id] = { id, bracket, round, label, slotA: null, slotB: null };
+    return id;
+  }
+
+  // Upper bracket
+  const ubRounds = [];
+  for (let r = 1; r <= k; r++) {
+    const numMatches = n / Math.pow(2, r);
+    const roundIds = [];
+    for (let i = 0; i < numMatches; i++) {
+      const label = numMatches === 1 ? "UPPER FINAL" : `UPPER ROUND ${r}-${i + 1}`;
+      roundIds.push(newMatch("upper", r, label));
+    }
+    ubRounds.push(roundIds);
+  }
+  ubRounds[0].forEach((id) => {
+    matches[id].slotA = { type: "empty" };
+    matches[id].slotB = { type: "empty" };
+  });
+  for (let r = 2; r <= k; r++) {
+    const round = ubRounds[r - 1];
+    const prev = ubRounds[r - 2];
+    round.forEach((id, i) => {
+      matches[id].slotA = { type: "winner", from: prev[2 * i] };
+      matches[id].slotB = { type: "winner", from: prev[2 * i + 1] };
+      addDep(prev[2 * i], id);
+      addDep(prev[2 * i + 1], id);
+    });
+  }
+
+  // Lower bracket
+  const lbRounds = [];
+  let lbRoundNum = 1;
+  const ubR1 = ubRounds[0];
+  const l1Ids = [];
+  for (let i = 0; i < ubR1.length; i += 2) {
+    const label = `LOWER ROUND 1${ubR1.length > 2 ? `-${l1Ids.length + 1}` : ""}`;
+    const id = newMatch("lower", lbRoundNum, label);
+    matches[id].slotA = { type: "loser", from: ubR1[i] };
+    matches[id].slotB = { type: "loser", from: ubR1[i + 1] };
+    addDep(ubR1[i], id);
+    addDep(ubR1[i + 1], id);
+    l1Ids.push(id);
+  }
+  lbRounds.push(l1Ids);
+
+  let prevMinor = l1Ids;
+  let lowerFinalId = null;
+  {
+    for (let m = 1; m <= k - 1; m++) {
+      lbRoundNum++;
+      const ubLosers = ubRounds[m];
+      const isFinal = m === k - 1;
+      const majorIds = [];
+      for (let i = 0; i < prevMinor.length; i++) {
+        const label = isFinal
+          ? "LOWER FINAL"
+          : `LOWER ROUND ${lbRoundNum}${prevMinor.length > 1 ? `-${i + 1}` : ""}`;
+        const id = newMatch("lower", lbRoundNum, label);
+        matches[id].slotA = { type: "winner", from: prevMinor[i] };
+        matches[id].slotB = { type: "loser", from: ubLosers[i] };
+        addDep(prevMinor[i], id);
+        addDep(ubLosers[i], id);
+        majorIds.push(id);
+      }
+      lbRounds.push(majorIds);
+      if (isFinal) {
+        lowerFinalId = majorIds[0];
+        break;
+      }
+      lbRoundNum++;
+      const minorIds = [];
+      for (let i = 0; i < majorIds.length; i += 2) {
+        const label = `LOWER ROUND ${lbRoundNum}${majorIds.length > 2 ? `-${minorIds.length + 1}` : ""}`;
+        const id = newMatch("lower", lbRoundNum, label);
+        matches[id].slotA = { type: "winner", from: majorIds[i] };
+        matches[id].slotB = { type: "winner", from: majorIds[i + 1] };
+        addDep(majorIds[i], id);
+        addDep(majorIds[i + 1], id);
+        minorIds.push(id);
+      }
+      lbRounds.push(minorIds);
+      prevMinor = minorIds;
+    }
+  }
+
+  // Grand final
+  const ubFinalId = ubRounds[k - 1][0];
+  const gf1 = newMatch("grand", 1, "GRAND FINAL");
+  matches[gf1].slotA = { type: "winner", from: ubFinalId };
+  matches[gf1].slotB = { type: "winner", from: lowerFinalId };
+  addDep(ubFinalId, gf1);
+  addDep(lowerFinalId, gf1);
+
+  const gf2 = newMatch("grand", 2, "GRAND FINAL (RESET)");
+  matches[gf2].slotA = { type: "winner", from: ubFinalId };
+  matches[gf2].slotB = { type: "winner", from: lowerFinalId };
+  addDep(ubFinalId, gf2);
+  addDep(lowerFinalId, gf2);
+
+  return { matches, ubRounds, lbRounds, gf1, gf2, dependents, n, k };
+}
+
+function clearDownstream(template, id, draft) {
+  const deps = template.dependents[id] || [];
+  deps.forEach((depId) => {
+    if (draft[depId]) {
+      delete draft[depId];
+      clearDownstream(template, depId, draft);
+    }
+  });
+}
+
+function centerY(top, h, count, i) {
+  return top + (h * (i + 0.5)) / count;
+}
+
+function ElbowLines({ y1, y2, x0a, x0b, x1, x2, yMid, color = LINE }) {
+  const a0 = x0a !== undefined ? x0a : x0b;
+  const b0 = x0b !== undefined ? x0b : x0a;
+  const mid = yMid !== undefined ? yMid : (y1 + y2) / 2;
+  return (
+    <g stroke={color} strokeWidth="2" fill="none">
+      <line x1={a0} y1={y1} x2={x1} y2={y1} />
+      <line x1={b0} y1={y2} x2={x1} y2={y2} />
+      <line x1={x1} y1={y1} x2={x1} y2={y2} />
+      <line x1={x1} y1={mid} x2={x2} y2={mid} />
+    </g>
+  );
+}
+
+function StraightLine({ y, x0, x2, color = LINE }) {
+  return <line x1={x0} y1={y} x2={x2} y2={y} stroke={color} strokeWidth="2" />;
+}
+
+function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDropAssign, scores = {}, onScoreChange, locked = false }) {
+  const sides = ["A", "B"];
+  const [dragOverSide, setDragOverSide] = useState(null);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        width: CARD_W,
+        height: BLOCK_H,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          background: RED,
+          color: "#fff",
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          padding: "3px 8px",
+          marginBottom: 3,
+          fontFamily: "Rajdhani, sans-serif",
+        }}
+      >
+        {match.label}
+      </div>
+      <div style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.35)" }}>
+        {sides.map((side, idx) => {
+          const info = r[side];
+          const key = `${match.id}_${side}`;
+          const isEmpty = info.type === "empty";
+          const isActive = activeSlot === key;
+          const isWinner = r.result === side;
+          const isLoser = r.decided && r.result !== side;
+          const clickableWinner = r.aReady && r.bReady;
+          const acceptsDrop = isEmpty && !info.ready && !locked;
+          const isDragOver = acceptsDrop && dragOverSide === side;
+          let bg = "#ffffff";
+          let color = "#111114";
+          let cursor = "default";
+          if (isWinner) {
+            bg = RED;
+            color = "#fff";
+          } else if (isLoser) {
+            bg = "#e9e9ea";
+            color = "#9a9aa0";
+          } else if (isDragOver) {
+            bg = "#ffd9d4";
+          } else if (isActive) {
+            bg = "#fff0ee";
+          }
+          if (!locked) {
+            if (isEmpty && !info.ready) cursor = "pointer";
+            else if (clickableWinner) cursor = "pointer";
+          }
+          return (
+            <div
+              key={side}
+              onClick={() => !locked && onSideClick(match.id, side, info, key)}
+              onDragOver={(e) => {
+                if (!acceptsDrop) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+              }}
+              onDragEnter={(e) => {
+                if (!acceptsDrop) return;
+                e.preventDefault();
+                setDragOverSide(side);
+              }}
+              onDragLeave={() => {
+                if (dragOverSide === side) setDragOverSide(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverSide(null);
+                if (!acceptsDrop) return;
+                const personId = e.dataTransfer.getData("text/plain");
+                if (personId) onDropAssign(key, personId);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                height: 27,
+                padding: "0 10px",
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: "Rajdhani, sans-serif",
+                background: bg,
+                color,
+                cursor,
+                borderBottom: idx === 0 ? "1px solid #d8d8db" : "none",
+                textDecoration: isLoser ? "line-through" : "none",
+                outline: isDragOver ? `2px dashed ${RED}` : isActive ? `2px solid ${RED}` : "none",
+                outlineOffset: -2,
+              }}
+            >
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  flex: 1,
+                }}
+              >
+                {info.name || (isEmpty ? "빈 자리 · 클릭하거나 끌어서 배정" : "TBD")}
+              </span>
+              {info.name && (
+                <input
+                  value={scores[key] || ""}
+                  onChange={(e) => !locked && onScoreChange(key, e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onDragStart={(e) => e.preventDefault()}
+                  placeholder="-"
+                  readOnly={locked}
+                  style={{
+                    width: 20,
+                    flexShrink: 0,
+                    textAlign: "center",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    fontFamily: "Rajdhani, sans-serif",
+                    background: isWinner || isLoser ? "rgba(255,255,255,0.25)" : "#f0f0f2",
+                    color: isWinner ? "#fff" : "#111114",
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    padding: "1px 2px",
+                    cursor: locked ? "default" : "text",
+                  }}
+                />
+              )}
+              {isEmpty && info.ready && !r.decided && !locked && (
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onUnassign(key);
+                  }}
+                  style={{
+                    fontSize: 11,
+                    color: isWinner ? "#fff" : "#9a9aa0",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  ✕
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PersonIcon({ size = 16, color = "#9a9aa5" }) {
+  const s = size + 6;
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" style={{ flexShrink: 0 }}>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+    </svg>
+  );
+}
+
+const RANK_BADGE = [
+  { bg: "#C9A227", fg: "#111114" }, // 1st - gold
+  { bg: "#8A97A8", fg: "#111114" }, // 2nd - silver
+  { bg: "#B08D57", fg: "#111114" }, // 3rd - bronze
+];
+
+function ResultModal({ champion, standings, onClose }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.78)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%",
+          maxWidth: 520,
+          maxHeight: "86vh",
+          overflowY: "auto",
+          background: "#131316",
+          border: "1px solid #2c2c31",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+          position: "relative",
+        }}
+      >
+        <span
+          onClick={onClose}
+          style={{
+            position: "absolute",
+            top: 14,
+            right: 16,
+            fontSize: 18,
+            color: "#77777e",
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+        >
+          ✕
+        </span>
+
+        <div style={{ padding: "28px 28px 18px", borderBottom: "1px solid #222227" }}>
+          <div style={{ fontSize: 11, letterSpacing: "0.14em", color: "#9a9aa5", textTransform: "uppercase", marginBottom: 8 }}>
+            최종 결과
+          </div>
+          <div style={{ fontFamily: "Anton, sans-serif", fontSize: 30, letterSpacing: "0.01em", lineHeight: 1.2 }}>
+            우승 <span style={{ color: RED }}>-</span> {champion || "TBD"}
+          </div>
+        </div>
+
+        <div style={{ padding: "8px 12px 20px" }}>
+          <div
+            style={{
+              display: "flex",
+              padding: "10px 16px",
+              fontSize: 11,
+              letterSpacing: "0.08em",
+              color: "#77777e",
+              textTransform: "uppercase",
+            }}
+          >
+            <div style={{ width: 60, flexShrink: 0 }}>순위</div>
+            <div>참가자</div>
+          </div>
+          {(standings || []).map((row, idx) => {
+            const size = Math.max(13, 24 - idx * 2);
+            const badge = RANK_BADGE[idx];
+            return (
+              <div
+                key={row.rank}
+                style={{
+                  display: "flex",
+                  alignItems: "stretch",
+                  gap: 14,
+                  padding: "10px 16px",
+                  borderTop: "1px solid #1e1e22",
+                  background: idx === 0 ? "rgba(201,162,39,0.08)" : idx === 1 ? "rgba(138,151,168,0.06)" : idx === 2 ? "rgba(176,141,87,0.06)" : "transparent",
+                }}
+              >
+                <div style={{ width: 60, flexShrink: 0, display: "flex", alignItems: "center" }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      minWidth: 34,
+                      padding: "3px 6px",
+                      height: 26,
+                      background: badge ? badge.bg : "#1e1e22",
+                      color: badge ? badge.fg : "#c9c9cf",
+                      fontFamily: "Anton, sans-serif",
+                      fontSize: 13,
+                    }}
+                  >
+                    {row.rank}
+                  </span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, justifyContent: "center", flex: 1 }}>
+                  {row.names.map((nm, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <PersonIcon size={size} />
+                      <span style={{ fontSize: size, fontWeight: 700, fontFamily: "Rajdhani, sans-serif" }}>{nm}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [phase, setPhase] = useState("setup");
+  const [n, setN] = useState(8);
+  const [pendingSize, setPendingSize] = useState(8);
+  const [leagueName, setLeagueName] = useState("");
+  const [pendingLeagueName, setPendingLeagueName] = useState("");
+  const [roster, setRoster] = useState([]);
+  const [rosterInput, setRosterInput] = useState("");
+  const [names, setNames] = useState({});
+  const [results, setResults] = useState({});
+  const [scores, setScores] = useState({});
+  const [finalized, setFinalized] = useState(false);
+  const [showResultModal, setShowResultModal] = useState(false);
+  const [activeSlot, setActiveSlot] = useState(null);
+  const prevFinalizedRef = useRef(false);
+
+  const [code, setCode] = useState(null);
+  const [joinInput, setJoinInput] = useState("");
+  const [joinError, setJoinError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const lastSyncedAtRef = useRef(0);
+  const suppressSaveRef = useRef(false);
+
+  const template = useMemo(() => buildTemplate(n), [n]);
+
+  const resolved = useMemo(() => {
+    const cache = {};
+    function resolveSlot(slot, key) {
+      if (!slot) return { name: null, ready: false, type: "none" };
+      if (slot.type === "empty") {
+        const nm = names[key];
+        return { name: nm || null, ready: !!nm, type: "empty" };
+      }
+      const m = resolveMatch(slot.from);
+      const nm = slot.type === "winner" ? m.winner : m.loser;
+      return { name: nm || null, ready: !!nm, type: slot.type };
+    }
+    function resolveMatch(id) {
+      if (cache[id]) return cache[id];
+      const m = template.matches[id];
+      const a = resolveSlot(m.slotA, `${id}_A`);
+      const b = resolveSlot(m.slotB, `${id}_B`);
+      const result = results[id];
+      const winner = result === "A" ? a.name : result === "B" ? b.name : null;
+      const loser = result === "A" ? b.name : result === "B" ? a.name : null;
+      const out = { A: a, B: b, aReady: a.ready, bReady: b.ready, decided: !!result, result, winner, loser };
+      cache[id] = out;
+      return out;
+    }
+    Object.keys(template.matches).forEach((id) => resolveMatch(id));
+    return cache;
+  }, [template, names, results]);
+
+  function selectWinner(matchId, side) {
+    if (finalized) return;
+    const r = resolved[matchId];
+    if (!r.aReady || !r.bReady) return;
+    setResults((prev) => {
+      const next = { ...prev };
+      if (next[matchId] === side) delete next[matchId];
+      else next[matchId] = side;
+      clearDownstream(template, matchId, next);
+      return next;
+    });
+  }
+
+  function onScoreChange(key, value) {
+    if (finalized) return;
+    const cleaned = value.replace(/[^0-9]/g, "").slice(0, 2);
+    setScores((prev) => ({ ...prev, [key]: cleaned }));
+  }
+
+  function onSideClick(matchId, side, info, key) {
+    if (finalized) return;
+    if (info.type === "empty" && !info.ready) {
+      setActiveSlot(key);
+      return;
+    }
+    selectWinner(matchId, side);
+  }
+
+  function addParticipant() {
+    const name = rosterInput.trim();
+    if (!name) return;
+    setRoster((r) => [...r, { id: `p${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name }]);
+    setRosterInput("");
+  }
+
+  function assignToSlot(person) {
+    if (finalized) return;
+    if (!activeSlot) return;
+    setNames((prev) => ({ ...prev, [activeSlot]: person.name }));
+    setRoster((prev) => prev.filter((p) => p.id !== person.id));
+    setActiveSlot(null);
+  }
+
+  function assignPersonToSlotById(slotKey, personId) {
+    if (finalized) return;
+    setRoster((prevRoster) => {
+      const person = prevRoster.find((p) => p.id === personId);
+      if (!person) return prevRoster;
+      setNames((prevNames) => ({ ...prevNames, [slotKey]: person.name }));
+      return prevRoster.filter((p) => p.id !== personId);
+    });
+    setActiveSlot(null);
+  }
+
+  function onUnassign(key) {
+    if (finalized) return;
+    const name = names[key];
+    if (!name) return;
+    setNames((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setRoster((prev) => [...prev, { id: `p${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name }]);
+  }
+
+  function removeFromRoster(id) {
+    setRoster((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  async function createTournament(size) {
+    setBusy(true);
+    setJoinError("");
+    const newCode = genCode();
+    const doc = { n: size, leagueName: pendingLeagueName.trim(), names: {}, results: {}, scores: {}, finalized: false, roster: [], updatedAt: Date.now() };
+    try {
+      await saveDoc(newCode, doc);
+    } catch (e) {
+      setJoinError("대진표를 만들지 못했어요. 잠시 후 다시 시도해주세요.");
+      setBusy(false);
+      return;
+    }
+    lastSyncedAtRef.current = doc.updatedAt;
+    setCode(newCode);
+    setN(size);
+    setLeagueName(doc.leagueName);
+    setNames({});
+    setResults({});
+    setScores({});
+    setFinalized(false);
+    setShowResultModal(false);
+    setRoster([]);
+    setActiveSlot(null);
+    setPhase("bracket");
+    setBusy(false);
+  }
+
+  async function joinTournament() {
+    const input = joinInput.trim().toUpperCase();
+    if (!input) return;
+    setBusy(true);
+    setJoinError("");
+    try {
+      const doc = await loadDocOnce(input);
+      if (!doc) {
+        setJoinError("해당 코드의 대진표를 찾을 수 없어요.");
+        setBusy(false);
+        return;
+      }
+      lastSyncedAtRef.current = doc.updatedAt || 0;
+      setCode(input);
+      setN(doc.n);
+      setLeagueName(doc.leagueName || "");
+      setNames(doc.names || {});
+      setResults(doc.results || {});
+      setScores(doc.scores || {});
+      setFinalized(!!doc.finalized);
+      setRoster(doc.roster || []);
+      setActiveSlot(null);
+      setPhase("bracket");
+    } catch (e) {
+      setJoinError("해당 코드의 대진표를 찾을 수 없어요.");
+    }
+    setBusy(false);
+  }
+
+  function resetResults() {
+    if (finalized) {
+      const ok = window.confirm("결과가 확정된 브래킷이에요. 초기화하면 모든 경기 결과가 사라지고 다시 입력할 수 있어요. 계속할까요?");
+      if (!ok) return;
+    }
+    setResults({});
+    setScores({});
+    setFinalized(false);
+    setShowResultModal(false);
+  }
+
+  function backToSetup() {
+    setPhase("setup");
+    setCode(null);
+    setJoinInput("");
+    setJoinError("");
+    setRoster([]);
+    setNames({});
+    setResults({});
+    setScores({});
+    setFinalized(false);
+    setShowResultModal(false);
+    setActiveSlot(null);
+    setLeagueName("");
+    setPendingLeagueName("");
+  }
+
+  function copyCode() {
+    if (!code) return;
+    try {
+      navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {}
+  }
+
+  // 로컬 변경사항을 공유 저장소에 반영
+  useEffect(() => {
+    if (phase !== "bracket" || !code) return;
+    if (suppressSaveRef.current) {
+      suppressSaveRef.current = false;
+      return;
+    }
+    const doc = { n, leagueName, names, results, scores, finalized, roster, updatedAt: Date.now() };
+    lastSyncedAtRef.current = doc.updatedAt;
+    saveDoc(code, doc).catch(() => {});
+  }, [n, leagueName, names, results, scores, finalized, roster]);
+
+  // 다른 참여자의 변경사항을 실시간으로 반영 (Firebase 실시간 구독)
+  useEffect(() => {
+    if (phase !== "bracket" || !code) return;
+    const unsubscribe = subscribeDoc(code, (remote) => {
+      if ((remote.updatedAt || 0) > lastSyncedAtRef.current) {
+        suppressSaveRef.current = true;
+        lastSyncedAtRef.current = remote.updatedAt;
+        setN(remote.n);
+        setLeagueName(remote.leagueName || "");
+        setNames(remote.names || {});
+        setResults(remote.results || {});
+        setScores(remote.scores || {});
+        setFinalized(!!remote.finalized);
+        setRoster(remote.roster || []);
+      }
+    });
+    return () => unsubscribe && unsubscribe();
+  }, [phase, code]);
+
+  // 확정 상태가 false → true 로 바뀔 때(내 조작이든, 다른 참여자의 확정이든) 결과 창을 자동으로 띄움
+  useEffect(() => {
+    if (finalized && !prevFinalizedRef.current) {
+      setShowResultModal(true);
+    }
+    prevFinalizedRef.current = finalized;
+  }, [finalized]);
+
+  // ---- layout math ----
+  const k = template.k;
+  const upperTop = 0;
+  const upperC0 = n / 2;
+  const H_upper = upperC0 * BLOCK_H;
+  const lowerTop = H_upper + SECTION_GAP;
+  const lowerC0 = template.lbRounds[0].length;
+  const H_lower = lowerC0 * BLOCK_H;
+
+  const ubRoundCount = k;
+  const lbRoundCount = template.lbRounds.length;
+  const upperFinalX = GUTTER + (ubRoundCount - 1) * COL_W;
+  const lowerFinalX = GUTTER + (lbRoundCount - 1) * COL_W;
+  const upperFinalRight = upperFinalX + CARD_W;
+  const lowerFinalRight = lowerFinalX + CARD_W;
+  const gfX = Math.max(upperFinalRight, lowerFinalRight) + CONN_W + 24;
+
+  const gfY1 = centerY(upperTop, H_upper, 1, 0);
+  const gfY2 = centerY(lowerTop, H_lower, 1, 0);
+  const gfMid = (gfY1 + gfY2) / 2;
+  const gf1Top = gfMid - BLOCK_H / 2;
+  const gf2Top = gf1Top + BLOCK_H + 14;
+
+  const totalH = Math.max(lowerTop + H_lower, gf2Top + BLOCK_H + 30);
+  const totalW = gfX + CARD_W + 40;
+
+  const gf1r = resolved[template.gf1];
+  const gf2r = resolved[template.gf2];
+  const showGf2 = gf1r.decided && gf1r.result === "B";
+  let champion = null;
+  if (gf1r.decided && gf1r.result === "A") champion = gf1r.winner;
+  else if (showGf2 && gf2r.decided) champion = gf2r.winner;
+
+  const standings = useMemo(() => {
+    if (!champion) return null;
+    const list = [{ rank: "1", names: [champion] }];
+    const finalGfR = showGf2 ? gf2r : gf1r;
+    const runnerUp = finalGfR && finalGfR.decided ? finalGfR.loser : null;
+    let lastRank = 1;
+    if (runnerUp) {
+      list.push({ rank: "2", names: [runnerUp] });
+      lastRank = 2;
+    }
+    for (let i = template.lbRounds.length - 1; i >= 0; i--) {
+      const losers = template.lbRounds[i]
+        .map((id) => resolved[id])
+        .filter((r) => r.decided)
+        .map((r) => r.loser)
+        .filter(Boolean);
+      if (losers.length === 0) continue;
+      const start = lastRank + 1;
+      const end = lastRank + losers.length;
+      list.push({ rank: start === end ? `${start}` : `${start}-${end}`, names: losers });
+      lastRank = end;
+    }
+    return list;
+  }, [champion, showGf2, gf1r, gf2r, template, resolved]);
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#0A0A0C",
+        color: "#fff",
+        fontFamily: "Rajdhani, sans-serif",
+      }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Anton&family=Rajdhani:wght@500;600;700&display=swap');
+        .scroll-thin::-webkit-scrollbar { height: 10px; }
+        .scroll-thin::-webkit-scrollbar-track { background: #131316; }
+        .scroll-thin::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 6px; }
+        button.bs-btn { font-family: 'Rajdhani', sans-serif; cursor: pointer; }
+        .roster-chip:hover { background: #26262c !important; }
+      `}</style>
+
+      {phase === "setup" && (
+        <div style={{ maxWidth: 560, margin: "0 auto", padding: "72px 24px", textAlign: "center" }}>
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <span
+              style={{
+                position: "absolute",
+                left: "50%",
+                top: -18,
+                transform: "translateX(-140px) rotate(-18deg)",
+                width: 40,
+                height: 6,
+                background: RED,
+              }}
+            />
+            <span
+              style={{
+                position: "absolute",
+                left: "50%",
+                top: -18,
+                transform: "translateX(100px) rotate(-18deg)",
+                width: 40,
+                height: 6,
+                background: RED,
+              }}
+            />
+            <h1
+              style={{
+                fontFamily: "Anton, sans-serif",
+                fontSize: 44,
+                letterSpacing: "0.02em",
+                margin: 0,
+              }}
+            >
+              BRACKET STAGE
+            </h1>
+          </div>
+          <p style={{ color: "#9a9aa5", fontSize: 15, marginTop: 4, marginBottom: 40 }}>
+            더블 엘리미네이션 대진표를 만들고, 참가자를 배정한 뒤 승패를 클릭하면 즉시 다음 라운드로 반영돼요.
+          </p>
+          <div style={{ fontSize: 12, letterSpacing: "0.1em", color: "#77777e", marginBottom: 10, textTransform: "uppercase" }}>
+            리그 이름
+          </div>
+          <input
+            value={pendingLeagueName}
+            onChange={(e) => setPendingLeagueName(e.target.value)}
+            placeholder="예: 2026 서울 발로란트 리그"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              background: "#0e0e10",
+              border: "1px solid #2c2c31",
+              color: "#fff",
+              padding: "12px 14px",
+              fontSize: 15,
+              marginBottom: 28,
+              fontFamily: "Rajdhani, sans-serif",
+            }}
+          />
+          <div style={{ fontSize: 12, letterSpacing: "0.1em", color: "#77777e", marginBottom: 10, textTransform: "uppercase" }}>
+            참가자 규모 선택
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 12, marginBottom: 32 }}>
+            {[4, 8, 16].map((size) => (
+              <button
+                key={size}
+                className="bs-btn"
+                onClick={() => setPendingSize(size)}
+                style={{
+                  width: 96,
+                  height: 64,
+                  fontSize: 22,
+                  fontWeight: 700,
+                  fontFamily: "Anton, sans-serif",
+                  background: pendingSize === size ? RED : "#18181b",
+                  color: "#fff",
+                  border: pendingSize === size ? `2px solid ${RED}` : "1px solid #2c2c31",
+                }}
+              >
+                {size}강
+              </button>
+            ))}
+          </div>
+          <button
+            className="bs-btn"
+            onClick={() => createTournament(pendingSize)}
+            disabled={busy}
+            style={{
+              background: RED,
+              color: "#fff",
+              border: "none",
+              padding: "14px 40px",
+              fontSize: 16,
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              opacity: busy ? 0.6 : 1,
+              cursor: busy ? "default" : "pointer",
+            }}
+          >
+            {busy ? "만드는 중..." : "대진표 만들기"}
+          </button>
+
+          <div style={{ margin: "40px 0 24px", display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1, height: 1, background: "#222227" }} />
+            <span style={{ fontSize: 11, letterSpacing: "0.1em", color: "#5c5c62" }}>또는</span>
+            <div style={{ flex: 1, height: 1, background: "#222227" }} />
+          </div>
+          <div style={{ fontSize: 12, letterSpacing: "0.1em", color: "#77777e", marginBottom: 10, textTransform: "uppercase" }}>
+            공유 코드로 입장하기
+          </div>
+          <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
+            <input
+              value={joinInput}
+              onChange={(e) => setJoinInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && joinTournament()}
+              placeholder="예: 7QK3M9"
+              style={{
+                width: 180,
+                background: "#0e0e10",
+                border: "1px solid #2c2c31",
+                color: "#fff",
+                padding: "12px 14px",
+                fontSize: 15,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                fontFamily: "Rajdhani, sans-serif",
+              }}
+            />
+            <button
+              className="bs-btn"
+              onClick={joinTournament}
+              disabled={busy}
+              style={{
+                background: "#18181b",
+                color: "#fff",
+                border: "1px solid #2c2c31",
+                padding: "0 20px",
+                fontSize: 14,
+                fontWeight: 700,
+                opacity: busy ? 0.6 : 1,
+                cursor: busy ? "default" : "pointer",
+              }}
+            >
+              입장
+            </button>
+          </div>
+          {joinError && <div style={{ color: "#ff6b6b", fontSize: 12, marginTop: 10 }}>{joinError}</div>}
+        </div>
+      )}
+
+      {phase === "bracket" && (
+        <div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "20px 28px",
+              borderBottom: "1px solid #1e1e22",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <h1 style={{ fontFamily: "Anton, sans-serif", fontSize: 26, margin: 0, letterSpacing: "0.02em" }}>
+                {leagueName || "BRACKET STAGE"} <span style={{ color: RED }}>· {n}강</span>
+              </h1>
+              <div
+                onClick={copyCode}
+                title="클릭해서 코드 복사"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: "#18181b",
+                  border: "1px solid #2c2c31",
+                  padding: "6px 12px",
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ fontSize: 11, color: "#77777e", textTransform: "uppercase", letterSpacing: "0.08em" }}>공유 코드</span>
+                <span style={{ fontFamily: "Anton, sans-serif", fontSize: 15, letterSpacing: "0.08em", color: RED }}>{code}</span>
+                <span style={{ fontSize: 11, color: copied ? "#6bff8f" : "#5c5c62" }}>{copied ? "복사됨" : "복사"}</span>
+              </div>
+              {finalized && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "#1c1517",
+                    border: `1px solid ${RED}`,
+                    padding: "6px 12px",
+                    fontSize: 11,
+                    color: "#ff9d9d",
+                    letterSpacing: "0.06em",
+                  }}
+                >
+                  🔒 결과 확정됨 · 브래킷 잠김
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="bs-btn"
+                onClick={resetResults}
+                style={{ background: "#18181b", color: "#fff", border: "1px solid #2c2c31", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}
+              >
+                결과 초기화
+              </button>
+              <button
+                className="bs-btn"
+                onClick={backToSetup}
+                style={{ background: "#18181b", color: "#fff", border: "1px solid #2c2c31", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}
+              >
+                새 대진표
+              </button>
+            </div>
+          </div>
+
+          {showGf2 && !champion && (
+            <div
+              style={{
+                margin: "18px 28px 0",
+                background: "#131316",
+                border: `1px solid ${RED}`,
+                padding: "14px 20px",
+                fontSize: 13,
+                color: "#f0d6d6",
+                lineHeight: 1.6,
+              }}
+            >
+              <b style={{ color: RED }}>패자조 진출자가 1차 그랜드파이널을 승리했어요.</b> 더블 엘리미네이션 규칙에 따라
+              그랜드파이널 리셋 매치를 한 번 더 진행해야 최종 우승자가 정해져요. 아래에 새로 생긴{" "}
+              <b>GRAND FINAL (RESET)</b> 매치 결과를 입력해주세요.
+            </div>
+          )}
+
+          {champion && (
+            <div
+              style={{
+                margin: "18px 28px 0",
+                background: RED,
+                padding: "14px 20px",
+                fontFamily: "Anton, sans-serif",
+                fontSize: 20,
+                letterSpacing: "0.02em",
+              }}
+            >
+              WINNER — {champion}
+            </div>
+          )}
+
+          {champion && !finalized && (
+            <div
+              style={{
+                margin: "14px 28px 0",
+                background: "#131316",
+                border: `1px solid ${RED}`,
+                padding: "16px 20px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ fontSize: 13, color: "#c9c9cf", lineHeight: 1.5 }}>
+                브래킷이 모두 끝났어요. 결과를 확정하면 브래킷을 더 이상 수정할 수 없어요.
+              </div>
+              <button
+                className="bs-btn"
+                onClick={() => setFinalized(true)}
+                style={{
+                  background: RED,
+                  color: "#fff",
+                  border: "none",
+                  padding: "10px 22px",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  flexShrink: 0,
+                }}
+              >
+                결과 확정하기
+              </button>
+            </div>
+          )}
+
+          {champion && finalized && standings && (
+            <div
+              style={{
+                margin: "14px 28px 0",
+                background: "#131316",
+                border: "1px solid #222227",
+                padding: "14px 20px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ fontSize: 13, color: "#c9c9cf", lineHeight: 1.5 }}>
+                결과가 확정되어 브래킷이 잠겼어요. 수정하려면 <b style={{ color: "#e8e8ea" }}>결과 초기화</b>를 눌러주세요.
+              </div>
+              <button
+                className="bs-btn"
+                onClick={() => setShowResultModal(true)}
+                style={{
+                  background: "#18181b",
+                  color: "#fff",
+                  border: "1px solid #2c2c31",
+                  padding: "10px 22px",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  flexShrink: 0,
+                }}
+              >
+                결과 보기
+              </button>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 24, padding: 24, alignItems: "flex-start" }}>
+            <div
+              style={{
+                width: 240,
+                flexShrink: 0,
+                background: "#131316",
+                border: "1px solid #222227",
+                padding: 16,
+              }}
+            >
+              <div style={{ fontSize: 12, letterSpacing: "0.08em", color: "#9a9aa5", textTransform: "uppercase", marginBottom: 8 }}>
+                참가자 등록
+              </div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                <input
+                  value={rosterInput}
+                  onChange={(e) => setRosterInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addParticipant()}
+                  placeholder="이름 입력"
+                  style={{
+                    flex: 1,
+                    background: "#0e0e10",
+                    border: "1px solid #2c2c31",
+                    color: "#fff",
+                    padding: "8px 10px",
+                    fontSize: 13,
+                    fontFamily: "Rajdhani, sans-serif",
+                  }}
+                />
+                <button
+                  className="bs-btn"
+                  onClick={addParticipant}
+                  style={{ background: RED, color: "#fff", border: "none", padding: "0 14px", fontSize: 13, fontWeight: 700 }}
+                >
+                  추가
+                </button>
+              </div>
+
+              {activeSlot && (
+                <div style={{ marginBottom: 14, padding: 10, background: "#1c1517", border: `1px solid ${RED}` }}>
+                  <div style={{ fontSize: 12, color: "#ff9d9d", marginBottom: 6 }}>선택한 자리에 배정할 선수를 고르세요</div>
+                  {roster.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#77777e" }}>등록된 대기 선수가 없어요.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {roster.map((p) => (
+                        <div
+                          key={p.id}
+                          onClick={() => assignToSlot(p)}
+                          className="roster-chip"
+                          style={{ background: "#26262c", padding: "6px 10px", fontSize: 13, cursor: "pointer" }}
+                        >
+                          {p.name}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    className="bs-btn"
+                    onClick={() => setActiveSlot(null)}
+                    style={{ marginTop: 8, background: "transparent", border: "1px solid #3a3a40", color: "#9a9aa5", fontSize: 11, padding: "4px 10px" }}
+                  >
+                    취소
+                  </button>
+                </div>
+              )}
+
+              <div style={{ fontSize: 12, letterSpacing: "0.08em", color: "#9a9aa5", textTransform: "uppercase", marginBottom: 8 }}>
+                대기 명단 ({roster.length})
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 300, overflowY: "auto" }}>
+                {roster.map((p) => (
+                  <div
+                    key={p.id}
+                    className="roster-chip"
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/plain", p.id);
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: "#1c1c20",
+                      padding: "6px 10px",
+                      fontSize: 13,
+                      cursor: "grab",
+                    }}
+                  >
+                    <span>{p.name}</span>
+                    <span onClick={() => removeFromRoster(p.id)} style={{ color: "#77777e", cursor: "pointer", fontSize: 11 }}>
+                      ✕
+                    </span>
+                  </div>
+                ))}
+                {roster.length === 0 && <div style={{ fontSize: 12, color: "#5c5c62" }}>이름을 추가하면 여기 표시돼요.</div>}
+              </div>
+              <div style={{ fontSize: 11, color: "#5c5c62", marginTop: 16, lineHeight: 1.5 }}>
+                대기 명단의 선수를 대진표의 빈 자리로 끌어서 놓거나, 빈 자리를 클릭해서 배정할 수 있어요. 양쪽 자리가 모두 채워지면 이름을 클릭해 승자를 정할 수 있어요.
+              </div>
+              <div style={{ fontSize: 11, color: "#5c5c62", marginTop: 10, lineHeight: 1.5 }}>
+                상단의 공유 코드를 다른 사람에게 알려주면, 같은 코드로 입장한 모두가 실시간으로 같은 대진표를 보고 함께 결과를 입력할 수 있어요.
+              </div>
+            </div>
+
+            <div className="scroll-thin" style={{ overflowX: "auto", flex: 1 }}>
+              <div style={{ position: "relative", width: totalW, height: totalH }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: upperTop,
+                    height: H_upper,
+                    width: 20,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      transform: "rotate(-90deg)",
+                      whiteSpace: "nowrap",
+                      fontFamily: "Anton, sans-serif",
+                      fontSize: 13,
+                      letterSpacing: "0.15em",
+                      color: "#5c5c62",
+                    }}
+                  >
+                    UPPER BRACKET
+                  </span>
+                </div>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: lowerTop,
+                    height: H_lower,
+                    width: 20,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      transform: "rotate(-90deg)",
+                      whiteSpace: "nowrap",
+                      fontFamily: "Anton, sans-serif",
+                      fontSize: 13,
+                      letterSpacing: "0.15em",
+                      color: "#5c5c62",
+                    }}
+                  >
+                    LOWER BRACKET
+                  </span>
+                </div>
+
+                <svg style={{ position: "absolute", left: 0, top: 0, width: totalW, height: totalH, pointerEvents: "none" }}>
+                  {template.ubRounds.slice(0, -1).map((roundIds, ri) => {
+                    const roundB = template.ubRounds[ri + 1];
+                    const x1 = GUTTER + ri * COL_W + CARD_W;
+                    const x2 = GUTTER + (ri + 1) * COL_W;
+                    const xm = x1 + CONN_W / 2;
+                    return roundB.map((_, j) => {
+                      const y1 = centerY(upperTop, H_upper, roundIds.length, 2 * j);
+                      const y2 = centerY(upperTop, H_upper, roundIds.length, 2 * j + 1);
+                      const yMid = centerY(upperTop, H_upper, roundB.length, j);
+                      return (
+                        <ElbowLines
+                          key={`u${ri}-${j}`}
+                          y1={y1}
+                          y2={y2}
+                          x0a={x1}
+                          x0b={x1}
+                          x1={xm}
+                          x2={x2}
+                          yMid={yMid}
+                        />
+                      );
+                    });
+                  })}
+
+                  {template.lbRounds.slice(0, -1).map((roundIds, ri) => {
+                    const roundB = template.lbRounds[ri + 1];
+                    const x1 = GUTTER + ri * COL_W + CARD_W;
+                    const x2 = GUTTER + (ri + 1) * COL_W;
+                    const xm = x1 + CONN_W / 2;
+                    if (roundB.length === roundIds.length / 2) {
+                      return roundB.map((_, j) => {
+                        const y1 = centerY(lowerTop, H_lower, roundIds.length, 2 * j);
+                        const y2 = centerY(lowerTop, H_lower, roundIds.length, 2 * j + 1);
+                        const yMid = centerY(lowerTop, H_lower, roundB.length, j);
+                        return (
+                          <ElbowLines key={`l${ri}-${j}`} y1={y1} y2={y2} x0a={x1} x0b={x1} x1={xm} x2={x2} yMid={yMid} />
+                        );
+                      });
+                    }
+                    return roundIds.map((_, j) => {
+                      const y = centerY(lowerTop, H_lower, roundIds.length, j);
+                      return <StraightLine key={`l${ri}-${j}`} y={y} x0={x1} x2={x2} />;
+                    });
+                  })}
+
+                  <ElbowLines
+                    y1={gfY1}
+                    y2={gfY2}
+                    x0a={upperFinalRight}
+                    x0b={lowerFinalRight}
+                    x1={Math.max(upperFinalRight, lowerFinalRight) + CONN_W / 2}
+                    x2={gfX}
+                    yMid={gfMid}
+                  />
+                </svg>
+
+                {template.ubRounds.map((roundIds, ri) =>
+                  roundIds.map((id, i) => {
+                    const m = template.matches[id];
+                    const r = resolved[id];
+                    const x = GUTTER + ri * COL_W;
+                    const y = centerY(upperTop, H_upper, roundIds.length, i) - BLOCK_H / 2;
+                    return (
+                      <MatchCard
+                        key={id}
+                        match={m}
+                        r={r}
+                        x={x}
+                        y={y}
+                        activeSlot={activeSlot}
+                        onSideClick={onSideClick}
+                        onUnassign={onUnassign}
+                        onDropAssign={assignPersonToSlotById}
+                        scores={scores}
+                        onScoreChange={onScoreChange}
+                        locked={finalized}
+                      />
+                    );
+                  })
+                )}
+
+                {template.lbRounds.map((roundIds, ri) =>
+                  roundIds.map((id, i) => {
+                    const m = template.matches[id];
+                    const r = resolved[id];
+                    const x = GUTTER + ri * COL_W;
+                    const y = centerY(lowerTop, H_lower, roundIds.length, i) - BLOCK_H / 2;
+                    return (
+                      <MatchCard
+                        key={id}
+                        match={m}
+                        r={r}
+                        x={x}
+                        y={y}
+                        activeSlot={activeSlot}
+                        onSideClick={onSideClick}
+                        onUnassign={onUnassign}
+                        onDropAssign={assignPersonToSlotById}
+                        scores={scores}
+                        onScoreChange={onScoreChange}
+                        locked={finalized}
+                      />
+                    );
+                  })
+                )}
+
+                <MatchCard
+                  match={template.matches[template.gf1]}
+                  r={gf1r}
+                  x={gfX}
+                  y={gf1Top}
+                  activeSlot={activeSlot}
+                  onSideClick={onSideClick}
+                  onUnassign={onUnassign}
+                  onDropAssign={assignPersonToSlotById}
+                  scores={scores}
+                  onScoreChange={onScoreChange}
+                  locked={finalized}
+                />
+                {showGf2 && (
+                  <MatchCard
+                    match={template.matches[template.gf2]}
+                    r={gf2r}
+                    x={gfX}
+                    y={gf2Top}
+                    activeSlot={activeSlot}
+                    onSideClick={onSideClick}
+                    onUnassign={onUnassign}
+                    onDropAssign={assignPersonToSlotById}
+                    scores={scores}
+                    onScoreChange={onScoreChange}
+                    locked={finalized}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {showResultModal && champion && standings && (
+            <ResultModal champion={champion} standings={standings} onClose={() => setShowResultModal(false)} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function Boot() {
+  if (!window.__bracketConfigured) return null;
+  return <App />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<Boot />);
+</script>
+</body>
+</html>
