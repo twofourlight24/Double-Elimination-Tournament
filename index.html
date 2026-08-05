@@ -113,7 +113,7 @@ function genCode() {
 }
 
 const CARD_W = 190;
-const BLOCK_H = 80;
+const BLOCK_H = 110;
 const CONN_W = 34;
 const COL_W = CARD_W + CONN_W;
 const SECTION_GAP = 70;
@@ -297,7 +297,7 @@ function StraightLine({ y, x0, x2, color = LINE }) {
   return <line x1={x0} y1={y} x2={x2} y2={y} stroke={color} strokeWidth="2" />;
 }
 
-function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDropAssign, scores = {}, onScoreChange, locked = false }) {
+function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDropAssign, scores = {}, onScoreChange, comments = {}, onCommentChange, locked = false }) {
   const sides = ["A", "B"];
   const [dragOverSide, setDragOverSide] = useState(null);
   return (
@@ -455,6 +455,28 @@ function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDrop
           );
         })}
       </div>
+      <input
+        value={comments[match.id] || ""}
+        onChange={(e) => onCommentChange(match.id, e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        maxLength={120}
+        placeholder="Leave a short comment..."
+        aria-label={`${match.label} comment`}
+        style={{
+          height: 24,
+          boxSizing: "border-box",
+          width: "100%",
+          marginTop: 3,
+          padding: "3px 8px",
+          background: "#1c1c20",
+          color: "#e8e8ea",
+          border: "1px solid #34343a",
+          fontFamily: "Rajdhani, sans-serif",
+          fontSize: 11,
+          outline: "none",
+        }}
+      />
     </div>
   );
 }
@@ -602,6 +624,7 @@ function App() {
   const [names, setNames] = useState({});
   const [results, setResults] = useState({});
   const [scores, setScores] = useState({});
+  const [comments, setComments] = useState({});
   const [finalized, setFinalized] = useState(false);
   const [showResultModal, setShowResultModal] = useState(false);
   const [activeSlot, setActiveSlot] = useState(null);
@@ -667,6 +690,10 @@ function App() {
     if (finalized) return;
     const cleaned = value.replace(/[^0-9]/g, "").slice(0, 2);
     setScores((prev) => ({ ...prev, [key]: cleaned }));
+  }
+
+  function onCommentChange(matchId, value) {
+    setComments((prev) => ({ ...prev, [matchId]: value.slice(0, 120) }));
   }
 
   function onSideClick(matchId, side, info, key) {
@@ -813,7 +840,7 @@ function App() {
     setBusy(true);
     setJoinError("");
     const newCode = genCode();
-    const doc = { n: size, leagueName: pendingLeagueName.trim(), names: {}, results: {}, scores: {}, finalized: false, roster: [], updatedAt: Date.now() };
+    const doc = { n: size, leagueName: pendingLeagueName.trim(), names: {}, results: {}, scores: {}, comments: {}, finalized: false, roster: [], updatedAt: Date.now() };
     try {
       await saveDoc(newCode, doc);
     } catch (e) {
@@ -828,6 +855,7 @@ function App() {
     setNames({});
     setResults({});
     setScores({});
+    setComments({});
     setFinalized(false);
     setShowResultModal(false);
     setRoster([]);
@@ -855,6 +883,7 @@ function App() {
       setNames(doc.names || {});
       setResults(doc.results || {});
       setScores(doc.scores || {});
+      setComments(doc.comments || {});
       setFinalized(!!doc.finalized);
       setRoster(doc.roster || []);
       setActiveSlot(null);
@@ -885,6 +914,7 @@ function App() {
     setNames({});
     setResults({});
     setScores({});
+    setComments({});
     setFinalized(false);
     setShowResultModal(false);
     setActiveSlot(null);
@@ -908,10 +938,10 @@ function App() {
       suppressSaveRef.current = false;
       return;
     }
-    const doc = { n, leagueName, names, results, scores, finalized, roster, updatedAt: Date.now() };
+    const doc = { n, leagueName, names, results, scores, comments, finalized, roster, updatedAt: Date.now() };
     lastSyncedAtRef.current = doc.updatedAt;
     saveDoc(code, doc).catch(() => {});
-  }, [n, leagueName, names, results, scores, finalized, roster]);
+  }, [n, leagueName, names, results, scores, comments, finalized, roster]);
 
   // 다른 참여자의 변경사항을 실시간으로 반영 (Firebase 실시간 구독)
   useEffect(() => {
@@ -925,6 +955,7 @@ function App() {
         setNames(remote.names || {});
         setResults(remote.results || {});
         setScores(remote.scores || {});
+        setComments(remote.comments || {});
         setFinalized(!!remote.finalized);
         setRoster(remote.roster || []);
       }
@@ -1618,6 +1649,8 @@ function App() {
                         onDropAssign={assignPersonToSlotById}
                         scores={scores}
                         onScoreChange={onScoreChange}
+                        comments={comments}
+                        onCommentChange={onCommentChange}
                         locked={finalized}
                       />
                     );
@@ -1643,6 +1676,8 @@ function App() {
                         onDropAssign={assignPersonToSlotById}
                         scores={scores}
                         onScoreChange={onScoreChange}
+                        comments={comments}
+                        onCommentChange={onCommentChange}
                         locked={finalized}
                       />
                     );
@@ -1660,6 +1695,8 @@ function App() {
                   onDropAssign={assignPersonToSlotById}
                   scores={scores}
                   onScoreChange={onScoreChange}
+                  comments={comments}
+                  onCommentChange={onCommentChange}
                   locked={finalized}
                 />
                 {showGf2 && (
@@ -1674,6 +1711,8 @@ function App() {
                     onDropAssign={assignPersonToSlotById}
                     scores={scores}
                     onScoreChange={onScoreChange}
+                    comments={comments}
+                    onCommentChange={onCommentChange}
                     locked={finalized}
                   />
                 )}
@@ -1690,6 +1729,8 @@ function App() {
                       onDropAssign={assignPersonToSlotById}
                       scores={scores}
                       onScoreChange={onScoreChange}
+                      comments={comments}
+                      onCommentChange={onCommentChange}
                       locked={finalized}
                     />
                     <MatchCard
@@ -1703,6 +1744,8 @@ function App() {
                       onDropAssign={assignPersonToSlotById}
                       scores={scores}
                       onScoreChange={onScoreChange}
+                      comments={comments}
+                      onCommentChange={onCommentChange}
                       locked={finalized}
                     />
                   </>
