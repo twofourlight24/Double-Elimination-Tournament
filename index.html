@@ -242,7 +242,27 @@ function buildTemplate(n) {
   addDep(ubFinalId, gf2);
   addDep(lowerFinalId, gf2);
 
-  return { matches, ubRounds, lbRounds, gf1, gf2, dependents, n, k };
+  // Eight-player brackets have two paired elimination rounds. Keep those
+  // competitors in the event with explicit placement matches instead of
+  // leaving 5-6th and 7-8th as tied positions.
+  const placement = { fifthSixth: null, seventhEighth: null };
+  if (n === 8 && l1Ids.length === 2 && lbRounds[1] && lbRounds[1].length === 2) {
+    const seventhEighth = newMatch("placement", 1, "7TH / 8TH PLACE");
+    matches[seventhEighth].slotA = { type: "loser", from: l1Ids[0] };
+    matches[seventhEighth].slotB = { type: "loser", from: l1Ids[1] };
+    addDep(l1Ids[0], seventhEighth);
+    addDep(l1Ids[1], seventhEighth);
+
+    const fifthSixth = newMatch("placement", 2, "5TH / 6TH PLACE");
+    matches[fifthSixth].slotA = { type: "loser", from: lbRounds[1][0] };
+    matches[fifthSixth].slotB = { type: "loser", from: lbRounds[1][1] };
+    addDep(lbRounds[1][0], fifthSixth);
+    addDep(lbRounds[1][1], fifthSixth);
+    placement.fifthSixth = fifthSixth;
+    placement.seventhEighth = seventhEighth;
+  }
+
+  return { matches, ubRounds, lbRounds, gf1, gf2, placement, dependents, n, k };
 }
 
 function clearDownstream(template, id, draft) {
@@ -598,6 +618,7 @@ function App() {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const viewPointersRef = useRef(new Map());
   const panStartRef = useRef(null);
+  const bracketViewportRef = useRef(null);
 
   const template = useMemo(() => buildTemplate(n), [n]);
 
@@ -730,13 +751,22 @@ function App() {
   }
 
   function handleBracketWheel(e) {
-    if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
+    e.stopPropagation();
     setView((prev) => ({
       ...prev,
       scale: Math.max(0.5, Math.min(2, prev.scale * (e.deltaY < 0 ? 1.1 : 0.9))),
     }));
   }
+
+  // Use a non-passive native listener so browser zoom (Ctrl/Command + wheel)
+  // is suppressed while the pointer is inside the bracket viewport.
+  useEffect(() => {
+    const viewport = bracketViewportRef.current;
+    if (!viewport) return;
+    viewport.addEventListener("wheel", handleBracketWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", handleBracketWheel);
+  }, []);
 
   function handleBracketPointerDown(e) {
     // A match card owns its clicks (winner selection, scores, unassignment).
@@ -932,8 +962,12 @@ function App() {
   const gfMid = (gfY1 + gfY2) / 2;
   const gf1Top = gfMid - BLOCK_H / 2;
   const gf2Top = gf1Top + BLOCK_H + 14;
+  const placementTop = lowerTop + H_lower + 58;
+  const hasPlacementMatches = !!template.placement.fifthSixth;
+  const seventhEighthX = GUTTER;
+  const fifthSixthX = GUTTER + 2 * COL_W;
 
-  const totalH = Math.max(lowerTop + H_lower, gf2Top + BLOCK_H + 30);
+  const totalH = Math.max(lowerTop + H_lower, gf2Top + BLOCK_H + 30, hasPlacementMatches ? placementTop + BLOCK_H + 36 : 0);
   const totalW = gfX + CARD_W + 40;
 
   const gf1r = resolved[template.gf1];
@@ -1448,13 +1482,13 @@ function App() {
               </div>
               <div
                 className="scroll-thin bracket-viewport"
-                onWheel={handleBracketWheel}
+                ref={bracketViewportRef}
                 onPointerDown={handleBracketPointerDown}
                 onPointerMove={handleBracketPointerMove}
                 onPointerUp={handleBracketPointerEnd}
                 onPointerCancel={handleBracketPointerEnd}
                 style={{ overflow: "hidden", height: `min(72vh, ${totalH + 32}px)`, minHeight: 460, background: "#0e0e10", border: "1px solid #1e1e22", cursor: "grab" }}
-                title="Drag to move | Ctrl/Command + wheel to zoom | Pinch on touch devices"
+                title="Drag empty space to move | Mouse wheel to zoom | Pinch on touch devices"
               >
               <div style={{ position: "relative", width: totalW, height: totalH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, transformOrigin: "0 0", cursor: "inherit" }}>
                 <div
@@ -1642,6 +1676,36 @@ function App() {
                     onScoreChange={onScoreChange}
                     locked={finalized}
                   />
+                )}
+                {hasPlacementMatches && (
+                  <>
+                    <MatchCard
+                      match={template.matches[template.placement.seventhEighth]}
+                      r={resolved[template.placement.seventhEighth]}
+                      x={seventhEighthX}
+                      y={placementTop}
+                      activeSlot={activeSlot}
+                      onSideClick={onSideClick}
+                      onUnassign={onUnassign}
+                      onDropAssign={assignPersonToSlotById}
+                      scores={scores}
+                      onScoreChange={onScoreChange}
+                      locked={finalized}
+                    />
+                    <MatchCard
+                      match={template.matches[template.placement.fifthSixth]}
+                      r={resolved[template.placement.fifthSixth]}
+                      x={fifthSixthX}
+                      y={placementTop}
+                      activeSlot={activeSlot}
+                      onSideClick={onSideClick}
+                      onUnassign={onUnassign}
+                      onDropAssign={assignPersonToSlotById}
+                      scores={scores}
+                      onScoreChange={onScoreChange}
+                      locked={finalized}
+                    />
+                  </>
                 )}
               </div>
             </div>
