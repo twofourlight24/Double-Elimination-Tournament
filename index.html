@@ -113,7 +113,7 @@ function genCode() {
 }
 
 const CARD_W = 190;
-const BLOCK_H = 110;
+const BLOCK_H = 80;
 const CONN_W = 34;
 const COL_W = CARD_W + CONN_W;
 const SECTION_GAP = 70;
@@ -297,7 +297,7 @@ function StraightLine({ y, x0, x2, color = LINE }) {
   return <line x1={x0} y1={y} x2={x2} y2={y} stroke={color} strokeWidth="2" />;
 }
 
-function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDropAssign, scores = {}, onScoreChange, comments = {}, onCommentChange, locked = false }) {
+function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDropAssign, scores = {}, onScoreChange, onOpenComments, locked = false }) {
   const sides = ["A", "B"];
   const [dragOverSide, setDragOverSide] = useState(null);
   return (
@@ -315,6 +315,7 @@ function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDrop
       }}
     >
       <div
+        onClick={(e) => { e.stopPropagation(); onOpenComments(match.id); }}
         style={{
           background: RED,
           color: "#fff",
@@ -325,6 +326,7 @@ function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDrop
           padding: "3px 8px",
           marginBottom: 3,
           fontFamily: "Rajdhani, sans-serif",
+          cursor: "pointer",
         }}
       >
         {match.label}
@@ -455,28 +457,6 @@ function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDrop
           );
         })}
       </div>
-      <input
-        value={comments[match.id] || ""}
-        onChange={(e) => onCommentChange(match.id, e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        maxLength={120}
-        placeholder="Leave a short comment..."
-        aria-label={`${match.label} comment`}
-        style={{
-          height: 24,
-          boxSizing: "border-box",
-          width: "100%",
-          marginTop: 3,
-          padding: "3px 8px",
-          background: "#1c1c20",
-          color: "#e8e8ea",
-          border: "1px solid #34343a",
-          fontFamily: "Rajdhani, sans-serif",
-          fontSize: 11,
-          outline: "none",
-        }}
-      />
     </div>
   );
 }
@@ -613,6 +593,62 @@ function ResultModal({ champion, standings, onClose }) {
   );
 }
 
+function MatchDiscussionModal({ match, result, scores, comments, onAddComment, onClose }) {
+  const [text, setText] = useState("");
+  const [author, setAuthor] = useState("");
+  const [anonymous, setAnonymous] = useState(true);
+  const thread = Array.isArray(comments) ? comments : comments ? [{ id: "legacy", author: "Anonymous", text: String(comments), createdAt: 0 }] : [];
+  const scoreA = scores[`${match.id}_A`] || "-";
+  const scoreB = scores[`${match.id}_B`] || "-";
+
+  function submitComment(e) {
+    e.preventDefault();
+    const body = text.trim();
+    if (!body) return;
+    onAddComment(match.id, { author: anonymous || !author.trim() ? "Anonymous" : author.trim().slice(0, 24), text: body.slice(0, 300) });
+    setText("");
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 1100, padding: 18, background: "rgba(0,0,0,0.78)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 680, maxHeight: "88vh", overflowY: "auto", background: "#131316", border: "1px solid #34343a", boxShadow: "0 24px 70px rgba(0,0,0,0.6)" }}>
+        <div style={{ position: "relative", padding: "26px 30px", background: "#1b1b20", borderBottom: "1px solid #34343a" }}>
+          <button onClick={onClose} className="bs-btn" aria-label="Close" style={{ position: "absolute", right: 16, top: 14, background: "transparent", border: "none", color: "#aaaab0", fontSize: 22 }}>x</button>
+          <div style={{ color: RED, fontSize: 12, fontWeight: 700, letterSpacing: "0.12em", marginBottom: 16 }}>{match.label}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 18, textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, overflowWrap: "anywhere" }}>{result.A.name || "TBD"}</div>
+            <div>
+              <div style={{ fontFamily: "Anton, sans-serif", fontSize: 42, lineHeight: 1, color: "#fff" }}>{scoreA} <span style={{ color: RED }}>:</span> {scoreB}</div>
+              <div style={{ marginTop: 6, fontSize: 11, color: "#8b8b92", letterSpacing: "0.12em" }}>{result.decided ? "FINAL" : "IN PROGRESS"}</div>
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 700, overflowWrap: "anywhere" }}>{result.B.name || "TBD"}</div>
+          </div>
+        </div>
+
+        <div style={{ padding: "20px 30px 28px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", color: "#d8d8dc", marginBottom: 12 }}>COMMENTS ({thread.length})</div>
+          <form onSubmit={submitComment} style={{ padding: 14, marginBottom: 20, background: "#1b1b20", border: "1px solid #34343a" }}>
+            <textarea value={text} onChange={(e) => setText(e.target.value.slice(0, 300))} maxLength={300} placeholder="Write a comment..." style={{ width: "100%", minHeight: 66, resize: "vertical", boxSizing: "border-box", padding: 10, background: "#101012", border: "1px solid #3a3a40", color: "#fff", fontFamily: "Rajdhani, sans-serif", fontSize: 14 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, color: "#b6b6bb", fontSize: 12, cursor: "pointer" }}><input type="checkbox" checked={anonymous} onChange={(e) => setAnonymous(e.target.checked)} /> Post anonymously</label>
+              {!anonymous && <input value={author} onChange={(e) => setAuthor(e.target.value)} maxLength={24} placeholder="Display name (optional)" style={{ flex: 1, minWidth: 160, padding: "7px 9px", background: "#101012", border: "1px solid #3a3a40", color: "#fff", fontFamily: "Rajdhani, sans-serif" }} />}
+              <button className="bs-btn" type="submit" disabled={!text.trim()} style={{ marginLeft: "auto", padding: "8px 16px", background: RED, color: "#fff", border: "none", fontWeight: 700, opacity: text.trim() ? 1 : 0.45 }}>POST</button>
+            </div>
+          </form>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {thread.length === 0 ? <div style={{ padding: "22px 0", textAlign: "center", color: "#77777e", fontSize: 13 }}>No comments yet. Start the conversation.</div> : thread.map((comment) => (
+              <div key={comment.id} style={{ padding: "13px 15px", background: "#1b1b20", borderLeft: `3px solid ${RED}`, borderBottom: "1px solid #2a2a2f" }}>
+                <div style={{ marginBottom: 7, color: "#e8e8ea", fontWeight: 700, fontSize: 13 }}>{comment.author || "Anonymous"} <span style={{ marginLeft: 8, color: "#77777e", fontWeight: 500, fontSize: 11 }}>{comment.createdAt ? new Date(comment.createdAt).toLocaleString() : ""}</span></div>
+                <div style={{ color: "#d2d2d6", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 14, lineHeight: 1.45 }}>{comment.text}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [phase, setPhase] = useState("setup");
   const [n, setN] = useState(8);
@@ -627,6 +663,7 @@ function App() {
   const [comments, setComments] = useState({});
   const [finalized, setFinalized] = useState(false);
   const [showResultModal, setShowResultModal] = useState(false);
+  const [openMatchId, setOpenMatchId] = useState(null);
   const [activeSlot, setActiveSlot] = useState(null);
   const prevFinalizedRef = useRef(false);
 
@@ -692,8 +729,12 @@ function App() {
     setScores((prev) => ({ ...prev, [key]: cleaned }));
   }
 
-  function onCommentChange(matchId, value) {
-    setComments((prev) => ({ ...prev, [matchId]: value.slice(0, 120) }));
+  function addComment(matchId, comment) {
+    const entry = { id: `c${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, author: comment.author, text: comment.text, createdAt: Date.now() };
+    setComments((prev) => {
+      const previous = Array.isArray(prev[matchId]) ? prev[matchId] : prev[matchId] ? [{ id: "legacy", author: "Anonymous", text: String(prev[matchId]), createdAt: 0 }] : [];
+      return { ...prev, [matchId]: [...previous, entry] };
+    });
   }
 
   function onSideClick(matchId, side, info, key) {
@@ -858,6 +899,7 @@ function App() {
     setComments({});
     setFinalized(false);
     setShowResultModal(false);
+    setOpenMatchId(null);
     setRoster([]);
     setActiveSlot(null);
     setPhase("bracket");
@@ -887,6 +929,7 @@ function App() {
       setFinalized(!!doc.finalized);
       setRoster(doc.roster || []);
       setActiveSlot(null);
+      setOpenMatchId(null);
       setPhase("bracket");
     } catch (e) {
       setJoinError("해당 코드의 대진표를 찾을 수 없어요.");
@@ -918,6 +961,7 @@ function App() {
     setFinalized(false);
     setShowResultModal(false);
     setActiveSlot(null);
+    setOpenMatchId(null);
     setLeagueName("");
     setPendingLeagueName("");
   }
@@ -1649,8 +1693,7 @@ function App() {
                         onDropAssign={assignPersonToSlotById}
                         scores={scores}
                         onScoreChange={onScoreChange}
-                        comments={comments}
-                        onCommentChange={onCommentChange}
+                        onOpenComments={setOpenMatchId}
                         locked={finalized}
                       />
                     );
@@ -1676,8 +1719,7 @@ function App() {
                         onDropAssign={assignPersonToSlotById}
                         scores={scores}
                         onScoreChange={onScoreChange}
-                        comments={comments}
-                        onCommentChange={onCommentChange}
+                        onOpenComments={setOpenMatchId}
                         locked={finalized}
                       />
                     );
@@ -1695,8 +1737,7 @@ function App() {
                   onDropAssign={assignPersonToSlotById}
                   scores={scores}
                   onScoreChange={onScoreChange}
-                  comments={comments}
-                  onCommentChange={onCommentChange}
+                  onOpenComments={setOpenMatchId}
                   locked={finalized}
                 />
                 {showGf2 && (
@@ -1711,8 +1752,7 @@ function App() {
                     onDropAssign={assignPersonToSlotById}
                     scores={scores}
                     onScoreChange={onScoreChange}
-                    comments={comments}
-                    onCommentChange={onCommentChange}
+                    onOpenComments={setOpenMatchId}
                     locked={finalized}
                   />
                 )}
@@ -1729,8 +1769,7 @@ function App() {
                       onDropAssign={assignPersonToSlotById}
                       scores={scores}
                       onScoreChange={onScoreChange}
-                      comments={comments}
-                      onCommentChange={onCommentChange}
+                      onOpenComments={setOpenMatchId}
                       locked={finalized}
                     />
                     <MatchCard
@@ -1744,8 +1783,7 @@ function App() {
                       onDropAssign={assignPersonToSlotById}
                       scores={scores}
                       onScoreChange={onScoreChange}
-                      comments={comments}
-                      onCommentChange={onCommentChange}
+                      onOpenComments={setOpenMatchId}
                       locked={finalized}
                     />
                   </>
@@ -1757,6 +1795,16 @@ function App() {
 
           {showResultModal && champion && standings && (
             <ResultModal champion={champion} standings={standings} onClose={() => setShowResultModal(false)} />
+          )}
+          {openMatchId && template.matches[openMatchId] && (
+            <MatchDiscussionModal
+              match={template.matches[openMatchId]}
+              result={resolved[openMatchId]}
+              scores={scores}
+              comments={comments[openMatchId]}
+              onAddComment={addComment}
+              onClose={() => setOpenMatchId(null)}
+            />
           )}
         </div>
       )}
