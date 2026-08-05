@@ -194,9 +194,17 @@ function buildTemplate(n) {
           : `LOWER ROUND ${lbRoundNum}${prevMinor.length > 1 ? `-${i + 1}` : ""}`;
         const id = newMatch("lower", lbRoundNum, label);
         matches[id].slotA = { type: "winner", from: prevMinor[i] };
-        matches[id].slotB = { type: "loser", from: ubLosers[i] };
+        // Send each upper-bracket loser to the adjacent lower-bracket match.
+        // Example: Upper Round 2-1 loser enters Lower Round 2-2, and vice versa.
+        // This cross-over prevents the lower bracket from simply replaying the
+        // same side of the upper-bracket path. A one-match round has no alternate
+        // destination, so it remains connected directly.
+        const crossedIndex = ubLosers.length > 1
+          ? (i % 2 === 0 ? i + 1 : i - 1)
+          : i;
+        matches[id].slotB = { type: "loser", from: ubLosers[crossedIndex] };
         addDep(prevMinor[i], id);
-        addDep(ubLosers[i], id);
+        addDep(ubLosers[crossedIndex], id);
         majorIds.push(id);
       }
       lbRounds.push(majorIds);
@@ -274,6 +282,7 @@ function MatchCard({ match, r, x, y, activeSlot, onSideClick, onUnassign, onDrop
   const [dragOverSide, setDragOverSide] = useState(null);
   return (
     <div
+      data-bracket-interactive="true"
       style={{
         position: "absolute",
         left: x,
@@ -585,6 +594,10 @@ function App() {
   const [copied, setCopied] = useState(false);
   const lastSyncedAtRef = useRef(0);
   const suppressSaveRef = useRef(false);
+  // View settings are intentionally local: collaborators keep their own camera.
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const viewPointersRef = useRef(new Map());
+  const panStartRef = useRef(null);
 
   const template = useMemo(() => buildTemplate(n), [n]);
 
@@ -684,6 +697,86 @@ function App() {
 
   function removeFromRoster(id) {
     setRoster((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  function fillFirstRound(shuffle = false) {
+    if (finalized || roster.length === 0) return;
+    const emptySlots = template.ubRounds[0]
+      .flatMap((matchId) => [`${matchId}_A`, `${matchId}_B`])
+      .filter((slotKey) => !names[slotKey]);
+    if (emptySlots.length === 0) return;
+
+    const available = shuffle
+      ? [...roster].sort(() => Math.random() - 0.5)
+      : roster;
+    const count = Math.min(emptySlots.length, available.length);
+    const assigned = available.slice(0, count);
+    setNames((prev) => {
+      const next = { ...prev };
+      assigned.forEach((person, index) => { next[emptySlots[index]] = person.name; });
+      return next;
+    });
+    const assignedIds = new Set(assigned.map((person) => person.id));
+    setRoster((prev) => prev.filter((person) => !assignedIds.has(person.id)));
+    setActiveSlot(null);
+  }
+
+  function setZoom(scale) {
+    setView((prev) => ({ ...prev, scale: Math.max(0.5, Math.min(2, scale)) }));
+  }
+
+  function resetView() {
+    setView({ scale: 1, x: 0, y: 0 });
+  }
+
+  function handleBracketWheel(e) {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    setView((prev) => ({
+      ...prev,
+      scale: Math.max(0.5, Math.min(2, prev.scale * (e.deltaY < 0 ? 1.1 : 0.9))),
+    }));
+  }
+
+  function handleBracketPointerDown(e) {
+    // A match card owns its clicks (winner selection, scores, unassignment).
+    // Start panning only when the user presses on the empty bracket background.
+    if (e.target.closest && e.target.closest("[data-bracket-interactive='true']")) return;
+    // Mouse uses one pointer for panning; two touch pointers become a pinch gesture.
+    viewPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const points = [...viewPointersRef.current.values()];
+    if (points.length === 1) {
+      panStartRef.current = { x: e.clientX, y: e.clientY, viewX: view.x, viewY: view.y };
+    } else if (points.length === 2) {
+      const dx = points[0].x - points[1].x;
+      const dy = points[0].y - points[1].y;
+      panStartRef.current = { distance: Math.hypot(dx, dy), scale: view.scale };
+    }
+  }
+
+  function handleBracketPointerMove(e) {
+    if (!viewPointersRef.current.has(e.pointerId) || !panStartRef.current) return;
+    viewPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const points = [...viewPointersRef.current.values()];
+    if (points.length === 1 && panStartRef.current.viewX !== undefined) {
+      const start = panStartRef.current;
+      setView((prev) => ({ ...prev, x: start.viewX + e.clientX - start.x, y: start.viewY + e.clientY - start.y }));
+    } else if (points.length === 2 && panStartRef.current.distance) {
+      const dx = points[0].x - points[1].x;
+      const dy = points[0].y - points[1].y;
+      setZoom(panStartRef.current.scale * Math.hypot(dx, dy) / panStartRef.current.distance);
+    }
+  }
+
+  function handleBracketPointerEnd(e) {
+    viewPointersRef.current.delete(e.pointerId);
+    const points = [...viewPointersRef.current.values()];
+    if (points.length === 1) {
+      panStartRef.current = { x: points[0].x, y: points[0].y, viewX: view.x, viewY: view.y };
+    } else if (points.length === 0) {
+      panStartRef.current = null;
+    }
   }
 
   async function createTournament(size) {
@@ -891,6 +984,8 @@ function App() {
         .scroll-thin::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 6px; }
         button.bs-btn { font-family: 'Rajdhani', sans-serif; cursor: pointer; }
         .roster-chip:hover { background: #26262c !important; }
+        .bracket-viewport { touch-action: none; user-select: none; }
+        .bracket-viewport input, .bracket-viewport button { user-select: text; }
       `}</style>
 
       {phase === "setup" && (
@@ -1256,6 +1351,27 @@ function App() {
                 </button>
               </div>
 
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+                <button
+                  className="bs-btn"
+                  onClick={() => fillFirstRound(false)}
+                  disabled={finalized || roster.length === 0}
+                  style={{ background: "#26262c", color: "#fff", border: "1px solid #3a3a40", padding: "8px 6px", fontSize: 12, fontWeight: 700, opacity: finalized || roster.length === 0 ? 0.45 : 1 }}
+                  title="Fill only empty first-round slots in roster order"
+                >
+                  AUTO FILL
+                </button>
+                <button
+                  className="bs-btn"
+                  onClick={() => fillFirstRound(true)}
+                  disabled={finalized || roster.length === 0}
+                  style={{ background: RED, color: "#fff", border: "1px solid #E4222D", padding: "8px 6px", fontSize: 12, fontWeight: 700, opacity: finalized || roster.length === 0 ? 0.45 : 1 }}
+                  title="Shuffle the waiting list, then fill only empty first-round slots"
+                >
+                  SHUFFLE
+                </button>
+              </div>
+
               {activeSlot && (
                 <div style={{ marginBottom: 14, padding: 10, background: "#1c1517", border: `1px solid ${RED}` }}>
                   <div style={{ fontSize: 12, color: "#ff9d9d", marginBottom: 6 }}>선택한 자리에 배정할 선수를 고르세요</div>
@@ -1324,8 +1440,23 @@ function App() {
               </div>
             </div>
 
-            <div className="scroll-thin" style={{ overflowX: "auto", flex: 1 }}>
-              <div style={{ position: "relative", width: totalW, height: totalH }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginBottom: 10 }}>
+                <button className="bs-btn" onClick={() => setZoom(view.scale - 0.1)} style={{ width: 32, height: 30, background: "#1c1c20", color: "#fff", border: "1px solid #3a3a40", fontSize: 18 }}>-</button>
+                <button className="bs-btn" onClick={resetView} style={{ minWidth: 58, height: 30, background: "#1c1c20", color: "#fff", border: "1px solid #3a3a40", fontSize: 12, fontWeight: 700 }}>{Math.round(view.scale * 100)}%</button>
+                <button className="bs-btn" onClick={() => setZoom(view.scale + 0.1)} style={{ width: 32, height: 30, background: "#1c1c20", color: "#fff", border: "1px solid #3a3a40", fontSize: 18 }}>+</button>
+              </div>
+              <div
+                className="scroll-thin bracket-viewport"
+                onWheel={handleBracketWheel}
+                onPointerDown={handleBracketPointerDown}
+                onPointerMove={handleBracketPointerMove}
+                onPointerUp={handleBracketPointerEnd}
+                onPointerCancel={handleBracketPointerEnd}
+                style={{ overflow: "hidden", height: `min(72vh, ${totalH + 32}px)`, minHeight: 460, background: "#0e0e10", border: "1px solid #1e1e22", cursor: "grab" }}
+                title="Drag to move | Ctrl/Command + wheel to zoom | Pinch on touch devices"
+              >
+              <div style={{ position: "relative", width: totalW, height: totalH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, transformOrigin: "0 0", cursor: "inherit" }}>
                 <div
                   style={{
                     position: "absolute",
@@ -1514,6 +1645,7 @@ function App() {
                 )}
               </div>
             </div>
+          </div>
           </div>
 
           {showResultModal && champion && standings && (
